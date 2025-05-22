@@ -17,9 +17,9 @@
 
 ## Installation
 
-1. Copy the script folder into your OpenTTD GameScripts directory:
+1. Copy the 3 files script into a folder in your OpenTTD GameScripts directory: (i.e E:\Documents\OpenTTD\content_download\game\PB)
 2. Launch OpenTTD.
-3. In the main menu, go to **Game Scripts**, then select **NelbinCustom**.
+3. In the main menu, go to **Game Scripts**, then select **Production Booster**.
 4. Start or load a game to use the script.
 
 ## Customization
