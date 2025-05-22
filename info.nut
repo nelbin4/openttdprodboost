@@ -1,7 +1,7 @@
 require("version.nut");
 
 class ProductionBooster extends GSInfo {
-  function GetAuthor()      { return "Claude"; }
+  function GetAuthor()      { return "Nelbin"; }
   function GetName()        { return "Production Booster"; }
   function GetDescription() { return "Sets production of primary industries to maximum (128) when cargo transported reaches 50%"; }
   function GetVersion()     { return SELF_VERSION; }
