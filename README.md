@@ -20,7 +20,8 @@
 1. Copy the 3 files script into a folder in your OpenTTD GameScripts directory: (i.e E:\Documents\OpenTTD\content_download\game\PB)
 2. Launch OpenTTD.
 3. In the main menu, go to **Game Scripts**, then select **Production Booster**.
-4. Start or load a game to use the script.
+4. Create a new map, use the gamescript in game scripts.
+5. Enjoy
 
 ## Customization
 
