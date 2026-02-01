@@ -1,36 +1,48 @@
-# GameScript for OpenTTD
+# Production Booster (OpenTTD GameScript)
 
-**Production Booster** is a custom GameScript for OpenTTD that dynamically adjusts primary industry production based on transportation efficiency.
+Production Booster dynamically adjusts **primary industry** production based on how much cargo you actually transport. Reward good networks, penalize neglected industries.
 
 ## Features
 
-- 📈 **Production Increase**: If 80% or more of a primary industry's cargo is transported, its production increases.
-- 📉 **Production Decrease**: If less than 60% of a primary industry's cargo is transported, its production decreases.
-- ⚙️ Designed exclusively for **primary industries** (e.g., coal mines, forests).
-- 💡 Custom logic and thresholds defined in an easily modifiable `.nut` script.
+- 📈 Increase production when transported cargo meets the configured "increase" threshold.
+- 📉 Decrease production when transported cargo falls below the configured "decrease" threshold.
+- � Configurable step size and min/max production levels.
+- 🛡️ Grace period for new industries before they can be penalized.
+- ⚙️ Designed for primary industries only (e.g., coal mines, forests).
 
 ## Files
 
-- `info.nut` – GameScript metadata and configuration.
-- `main.nut` – Core logic controlling industry behavior.
-- `version.nut` – Version management for the script.
+- `info.nut` – Metadata and configurable settings.
+- `main.nut` – Core logic controlling industry behaviour.
+- `version.nut` – Script version definition.
 
-## Installation
+## Manual Installation
 
-1. Copy the 3 files script into a folder in your OpenTTD GameScripts directory: (i.e E:\Documents\OpenTTD\content_download\game\PB)
+1. Copy the three script files into an OpenTTD GameScripts folder, e.g. `Documents/OpenTTD/game/Production_Booster`.
 2. Launch OpenTTD.
-3. In the main menu, go to **Game Scripts**, then select **Production Booster**.
-4. Create a new map, use the gamescript in game scripts.
-5. Enjoy
+3. Start a new game, click Game Script Settings button, click Select Game Script.
 
-## Customization
+## Configuration
 
-The thresholds for production adjustment (80% and 60%) can be changed by editing the constants in `main.nut`. Look for the section labeled `-- CONFIGURABLE THRESHOLDS`.
+All knobs are exposed in the GameScript settings UI:
+
+- `increase_threshold` (transport % to trigger an increase)
+- `decrease_threshold` (transport % below which to decrease)
+- `step_size` (production change per adjustment)
+- `min_level` / `max_level` (bounds)
+- `grace_period_months` (months before new industries can decrease)
+- `log_level` (1=error … 4=debug)
+
+Defaults match the values shown in `info.nut`. You no longer need to edit code to tweak thresholds.
 
 ## Compatibility
 
-- Requires OpenTTD v1.11.0 or newer.
-- Tested with vanilla industries and standard settings.
+- Tested with OpenTTD 1.11.0+ and vanilla industries.
+
+## Development
+
+- The script is written in Squirrel (`.nut`).
+- See `CHANGELOG.md` for recent fixes/features.
 
 ## License
 
@@ -38,4 +50,4 @@ The thresholds for production adjustment (80% and 60%) can be changed by editing
 
 ---
 
-*Created by Nelbin4 github.com/nelbin4 for enhanced economic realism in OpenTTD.*
+Created by [Nelbin4](https://github.com/nelbin4) for enhanced economic realism in OpenTTD.
