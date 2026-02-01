@@ -1,1 +1,2 @@
-SELF_VERSION <- 1;
+// version.nut
+SELF_VERSION <- 3;
