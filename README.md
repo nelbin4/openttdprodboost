@@ -53,4 +53,4 @@ Written in Squirrel (`.nut`). See `CHANGELOG.md` for version history.
 
 ## License
 
-[MIT License](LICENSE) — created by [Nelbin4](https://github.com/nelbin4).
+[GNU General Public License v3](LICENSE) — created by [Nelbin4](https://github.com/nelbin4).
