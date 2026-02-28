@@ -43,8 +43,7 @@ All settings are adjustable in-game from the GameScript Parameters window withou
 
 ## Compatibility
 
-- OpenTTD 14.0+ (uses API version 14).
-- Compatible with calendar-based and wallclock-based economy timekeeping modes.
+- Tested on OpenTTD 15.1
 - Works with vanilla industries and NewGRF industry sets.
 
 ## Development
