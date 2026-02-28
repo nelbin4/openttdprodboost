@@ -4,7 +4,7 @@ class ProductionBooster extends GSInfo {
   function GetName()        { return "Production Booster"; }
   function GetDescription() { return "Dynamically adjusts primary industry production levels based on cargo transport efficiency. Production increases when transport rates are high and decreases when transport rates are low, encouraging better network coverage. https://github.com/nelbin4/openttdprodboost"; }
   function GetVersion()     { return SELF_VERSION; }
-  function GetDate()        { return "2025-02-02"; }
+  function GetDate()        { return "2026-02-28"; }
   function CreateInstance() { return "ProductionBooster"; }
   function GetShortName()   { return "PRDB"; }
   function GetAPIVersion()  { return "14"; }
@@ -46,7 +46,7 @@ class ProductionBooster extends GSInfo {
     AddSetting({
       name = "min_level", 
       description = "Minimum production level", 
-      min_value = 1, 
+      min_value = 4, 
       max_value = 64, 
       easy_value = 8, 
       medium_value = 8, 
@@ -57,7 +57,7 @@ class ProductionBooster extends GSInfo {
     AddSetting({
       name = "max_level", 
       description = "Maximum production level", 
-      min_value = 32, 
+      min_value = 4, 
       max_value = 128, 
       easy_value = 128, 
       medium_value = 128, 
