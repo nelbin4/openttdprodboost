@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 require("version.nut");
 
 class ProductionBooster extends GSController {
-  increase_threshold  = 80;
-  decrease_threshold  = 60;
+  increase_threshold  = 70;
+  decrease_threshold  = 50;
   step_size           = 4;
   min_level           = 8;
   max_level           = 128;
@@ -16,21 +15,21 @@ class ProductionBooster extends GSController {
 
   industry_tracked = null;
   id_cargo         = null;
-  cargo_cache      = null;
+  raw_types        = null;
 
   constructor() {
     industry_tracked = {};
     id_cargo         = {};
-    cargo_cache      = {};
+    raw_types        = {};
   }
 
   function ReadSettings() {
-    this.log_level          = GSController.GetSetting("log_level");
-    this.increase_threshold = GSController.GetSetting("increase_threshold");
-    this.decrease_threshold = GSController.GetSetting("decrease_threshold");
-    this.step_size          = GSController.GetSetting("step_size");
-    this.min_level          = GSController.GetSetting("min_level");
-    this.max_level          = GSController.GetSetting("max_level");
+    this.log_level           = GSController.GetSetting("log_level");
+    this.increase_threshold  = GSController.GetSetting("increase_threshold");
+    this.decrease_threshold  = GSController.GetSetting("decrease_threshold");
+    this.step_size           = GSController.GetSetting("step_size");
+    this.min_level           = GSController.GetSetting("min_level");
+    this.max_level           = GSController.GetSetting("max_level");
     this.grace_period_months = GSController.GetSetting("grace_period_months");
 
     local invalid = this.increase_threshold <= this.decrease_threshold;
@@ -39,6 +38,13 @@ class ProductionBooster extends GSController {
                "%) must be > decrease_threshold (" + this.decrease_threshold + "%)");
     }
     this.invalid_settings = invalid;
+  }
+
+  function FreightCargoList(industry_id) {
+    local cl = GSCargoList_IndustryProducing(industry_id);
+    cl.Valuate(GSCargo.IsFreight);
+    cl.KeepValue(1);
+    return cl;
   }
 
   function Start() {
@@ -54,20 +60,21 @@ class ProductionBooster extends GSController {
     local type_list = GSIndustryTypeList();
     type_list.Valuate(GSIndustryType.IsRawIndustry);
     type_list.KeepValue(1);
-    foreach (t, _ in type_list) this.cargo_cache[t] <- GSIndustryType.GetProducedCargo(t);
+    foreach (t, _ in type_list) this.raw_types[t] <- true;
 
-    local seed = GSIndustryList();
-    foreach (id, _ in seed) {
-      local t = GSIndustry.GetIndustryType(id);
-      if (!(t in this.cargo_cache)) continue;
-      this.id_cargo[id] <- this.cargo_cache[t];
+    foreach (id, _ in GSIndustryList()) {
+      if (!(GSIndustry.GetIndustryType(id) in this.raw_types)) continue;
+      local cl = this.FreightCargoList(id);
+      if (cl.IsEmpty()) continue;
+      this.id_cargo[id] <- cl;
+      if (!(id in this.industry_tracked)) this.industry_tracked[id] <- -1;
     }
 
-    local rebuilt = {};
-    foreach (id, _ in this.id_cargo) {
-      rebuilt[id] <- (id in this.industry_tracked) ? this.industry_tracked[id] : -1;
+    local clean = {};
+    foreach (id, v in this.industry_tracked) {
+      if (id in this.id_cargo) clean[id] <- v;
     }
-    this.industry_tracked = rebuilt;
+    this.industry_tracked = clean;
 
     this.Log(3, "Tracking " + this.industry_tracked.len() + " primary industries.");
 
@@ -79,6 +86,7 @@ class ProductionBooster extends GSController {
 
   function ProcessIndustries() {
     this.ReadSettings();
+    if (this.invalid_settings) { this.loop_count++; return; }
 
     local inc_thr   = this.increase_threshold;
     local dec_thr   = this.decrease_threshold;
@@ -90,7 +98,7 @@ class ProductionBooster extends GSController {
     local do_log    = this.log_level >= 3;
     local tracked   = this.industry_tracked;
     local ic        = this.id_cargo;
-    local cc        = this.cargo_cache;
+    local rt        = this.raw_types;
 
     while (GSEventController.IsEventWaiting()) {
       local ev = GSEventController.GetNextEvent();
@@ -98,13 +106,15 @@ class ProductionBooster extends GSController {
 
       if (et == GSEvent.ET_INDUSTRY_OPEN) {
         local id = GSEventIndustryOpen.Convert(ev).GetIndustryID();
-        local t  = GSIndustry.GetIndustryType(id);
-        if (t in cc) {
-          ic[id]      <- cc[t];
-          tracked[id] <- lcount;
-          if (do_log) {
-            this.Log(3, "New industry: " + GSIndustry.GetName(id) +
-                     " (ID:" + id + ") level=" + GSIndustry.GetProductionLevel(id));
+        if (GSIndustry.GetIndustryType(id) in rt) {
+          local cl = this.FreightCargoList(id);
+          if (!cl.IsEmpty()) {
+            ic[id]      <- cl;
+            tracked[id] <- lcount;
+            if (do_log) {
+              this.Log(3, "New industry: " + GSIndustry.GetName(id) +
+                       " (ID:" + id + ") level=" + GSIndustry.GetProductionLevel(id));
+            }
           }
         }
       } else if (et == GSEvent.ET_INDUSTRY_CLOSE) {
@@ -112,14 +122,13 @@ class ProductionBooster extends GSController {
         if (id in tracked) {
           delete tracked[id];
           delete ic[id];
-          if (do_log) this.Log(3, "Industry " + id + " removed.");
         }
       }
     }
 
     foreach (id, birth_loop in tracked) {
       local cargo_types = ic[id];
-      local total_pct  = 0;
+      local total_pct   = 0;
       local cargo_count = 0;
       foreach (cargo_id, _ in cargo_types) {
         if (GSIndustry.GetLastMonthProduction(id, cargo_id) <= 0) continue;
@@ -130,15 +139,13 @@ class ProductionBooster extends GSController {
 
       local avg_pct       = total_pct / cargo_count;
       local current_level = GSIndustry.GetProductionLevel(id);
-      local new_level;
+      local new_level     = current_level;
 
       if (avg_pct >= inc_thr) {
         new_level = min(current_level + step, max_lvl);
       } else if (avg_pct < dec_thr &&
                  (birth_loop < 0 || (lcount - birth_loop) >= grace)) {
         new_level = max(current_level - step, clamp_min);
-      } else {
-        continue;
       }
 
       if (new_level == current_level) continue;
@@ -180,4 +187,3 @@ class ProductionBooster extends GSController {
     }
   }
 }
-
