@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 require("version.nut");
 class ProductionBooster extends GSInfo {
   function GetAuthor()      { return "nelbin4"; }
@@ -90,3 +91,4 @@ class ProductionBooster extends GSInfo {
   }
 }
 RegisterGS(ProductionBooster());
+
