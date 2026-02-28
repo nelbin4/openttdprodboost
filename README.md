@@ -19,8 +19,8 @@ All settings are adjustable in-game from the GameScript Parameters window withou
 
 | Setting | Description | Default |
 |---|---|---|
-| `increase_threshold` | Transport % needed to increase production | 80 |
-| `decrease_threshold` | Transport % below which production decreases | 60 |
+| `increase_threshold` | Transport % needed to increase production | 70 |
+| `decrease_threshold` | Transport % below which production decreases | 50 |
 | `step_size` | Production level change per adjustment | 4 |
 | `min_level` | Minimum production level (API floor: 4) | 8 |
 | `max_level` | Maximum production level (API ceiling: 128) | 128 |
