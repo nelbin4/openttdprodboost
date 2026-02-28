@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 require("version.nut");
 
 class ProductionBooster extends GSController {
@@ -187,3 +188,4 @@ class ProductionBooster extends GSController {
     }
   }
 }
+
