@@ -1,26 +1,67 @@
 require("version.nut");
 
 class ProductionBooster extends GSController {
-  increase_threshold  = 70;
-  decrease_threshold  = 50;
+
+  increase_threshold  = 80;
+  decrease_threshold  = 60;
   step_size           = 4;
   min_level           = 8;
   max_level           = 128;
   grace_period_months = 3;
   log_level           = 3;
   invalid_settings    = false;
-  loop_count          = 0;
+  is_wallclock        = false;
 
-  static SLEEP_TICKS = 74 * 30;
+  static SLEEP_TICKS    = 74 * 30;
+  static DAYS_PER_MONTH = 30;
+  static OPS_RESERVE    = 2000;
+  static OWN_FLAGS      = GSIndustry.INDCTL_NO_PRODUCTION_INCREASE |
+                          GSIndustry.INDCTL_NO_PRODUCTION_DECREASE  |
+                          GSIndustry.INDCTL_NO_CLOSURE               |
+                          GSIndustry.INDCTL_EXTERNAL_PROD_LEVEL;
 
-  industry_tracked = null;
-  id_cargo         = null;
-  raw_types        = null;
+  id_cargo   = null;
+  id_can_inc = null;
 
   constructor() {
-    industry_tracked = {};
-    id_cargo         = {};
-    raw_types        = {};
+    id_cargo   = {};
+    id_can_inc = {};
+  }
+
+  static function IsRawIndustryFilter(industry_id) {
+    return GSIndustryType.IsRawIndustry(GSIndustry.GetIndustryType(industry_id));
+  }
+
+  static function FreightCargoList(industry_id) {
+    local cl = GSCargoList_IndustryProducing(industry_id);
+    cl.Valuate(GSCargo.IsFreight);
+    cl.KeepValue(1);
+    return cl;
+  }
+
+  function RegisterIndustry(id, cargo_list) {
+    this.id_cargo[id]   <- cargo_list;
+    this.id_can_inc[id] <- GSIndustryType.ProductionCanIncrease(GSIndustry.GetIndustryType(id));
+  }
+
+  function UnregisterIndustry(id) {
+    if (GSIndustry.IsValidIndustry(id)) {
+      GSIndustry.SetControlFlags(id, 0);
+    }
+    delete this.id_cargo[id];
+    delete this.id_can_inc[id];
+  }
+
+  function IsDormant(id, cur_year) {
+    if (this.is_wallclock) return false;
+    local last_year = GSIndustry.GetLastProductionYear(id);
+    return (last_year > 0) && ((cur_year - last_year) >= 2);
+  }
+
+  function IsInGrace(id, cur_date) {
+    local built = GSIndustry.GetConstructionDate(id);
+    return GSDate.IsValidDate(built) &&
+           (cur_date - built) < (this.grace_period_months * ProductionBooster.DAYS_PER_MONTH);
   }
 
   function ReadSettings() {
@@ -28,106 +69,123 @@ class ProductionBooster extends GSController {
     this.increase_threshold  = GSController.GetSetting("increase_threshold");
     this.decrease_threshold  = GSController.GetSetting("decrease_threshold");
     this.step_size           = GSController.GetSetting("step_size");
-    this.min_level           = GSController.GetSetting("min_level");
-    this.max_level           = GSController.GetSetting("max_level");
+    this.min_level           = max(GSController.GetSetting("min_level"), 4);
+    this.max_level           = min(GSController.GetSetting("max_level"), 128);
     this.grace_period_months = GSController.GetSetting("grace_period_months");
 
     local invalid = this.increase_threshold <= this.decrease_threshold;
-    if (invalid && !this.invalid_settings) {
-      this.Log(2, "increase_threshold (" + this.increase_threshold +
-               "%) must be > decrease_threshold (" + this.decrease_threshold + "%)");
+    if (invalid != this.invalid_settings) {
+      this.Log(2, invalid
+        ? ("Settings invalid: increase_threshold (" + this.increase_threshold +
+           "%) must be > decrease_threshold (" + this.decrease_threshold +
+           "%). Production changes suspended.")
+        : ("Settings valid: production adjustment resumed (" +
+           this.increase_threshold + "% / " + this.decrease_threshold + "%)."));
     }
     this.invalid_settings = invalid;
   }
 
-  function FreightCargoList(industry_id) {
-    local cl = GSCargoList_IndustryProducing(industry_id);
-    cl.Valuate(GSCargo.IsFreight);
-    cl.KeepValue(1);
-    return cl;
-  }
-
   function Start() {
     this.ReadSettings();
+    this.is_wallclock = GSGameSettings.IsValid("economy.timekeeping_units") &&
+                        GSGameSettings.GetValue("economy.timekeeping_units") != 0;
 
     this.Log(3, "Production Booster v" + SELF_VERSION + " started. " +
+             "Climate=" + ["Temperate", "Arctic", "Tropic", "Toyland"][GSGame.GetLandscape()] + " " +
+             (GSGame.IsMultiplayer() ? "MP " : "SP ") +
              "increase=" + this.increase_threshold + "% " +
              "decrease=" + this.decrease_threshold + "% " +
              "step=" + this.step_size + " " +
              "range=" + this.min_level + "-" + this.max_level + " " +
              "grace=" + this.grace_period_months + "mo");
 
-    local type_list = GSIndustryTypeList();
-    type_list.Valuate(GSIndustryType.IsRawIndustry);
-    type_list.KeepValue(1);
-    foreach (t, _ in type_list) this.raw_types[t] <- true;
-
-    foreach (id, _ in GSIndustryList()) {
-      if (!(GSIndustry.GetIndustryType(id) in this.raw_types)) continue;
-      local cl = this.FreightCargoList(id);
-      if (cl.IsEmpty()) continue;
-      this.id_cargo[id] <- cl;
-      if (!(id in this.industry_tracked)) this.industry_tracked[id] <- -1;
+    foreach (id, _ in GSIndustryList(ProductionBooster.IsRawIndustryFilter)) {
+      if (id in this.id_cargo) {
+        this.id_can_inc[id] = GSIndustryType.ProductionCanIncrease(GSIndustry.GetIndustryType(id));
+        continue;
+      }
+      local cl = ProductionBooster.FreightCargoList(id);
+      if (cl.IsEmpty()) {
+        this.Log(4, "Seed skip: " + GSIndustry.GetName(id) + " (ID:" + id + ")");
+        continue;
+      }
+      this.RegisterIndustry(id, cl);
     }
 
-    local clean = {};
-    foreach (id, v in this.industry_tracked) {
-      if (id in this.id_cargo) clean[id] <- v;
+    local stale = [];
+    foreach (id, _ in this.id_cargo) {
+      if (!GSIndustry.IsValidIndustry(id)) stale.push(id);
     }
-    this.industry_tracked = clean;
+    foreach (id in stale) this.UnregisterIndustry(id);
 
-    this.Log(3, "Tracking " + this.industry_tracked.len() + " primary industries.");
+    {
+      local async_mode = GSAsyncMode(true);
+      foreach (id, _ in this.id_cargo) {
+        GSIndustry.SetControlFlags(id, ProductionBooster.OWN_FLAGS);
+      }
+    }
+    this.Log(3, "Tracking " + this.id_cargo.len() + " primary industries.");
 
     while (true) {
-      this.Sleep(SLEEP_TICKS);
+      this.Sleep(ProductionBooster.SLEEP_TICKS);
       this.ProcessIndustries();
     }
   }
 
-  function ProcessIndustries() {
-    this.ReadSettings();
-    if (this.invalid_settings) { this.loop_count++; return; }
-
-    local inc_thr   = this.increase_threshold;
-    local dec_thr   = this.decrease_threshold;
-    local grace     = this.grace_period_months;
-    local lcount    = this.loop_count;
-    local max_lvl   = this.max_level;
-    local step      = this.step_size;
-    local clamp_min = max(this.min_level, 4);
-    local do_log    = this.log_level >= 3;
-    local tracked   = this.industry_tracked;
-    local ic        = this.id_cargo;
-    local rt        = this.raw_types;
-
+  function DrainEvents() {
     while (GSEventController.IsEventWaiting()) {
       local ev = GSEventController.GetNextEvent();
       local et = ev.GetEventType();
 
       if (et == GSEvent.ET_INDUSTRY_OPEN) {
         local id = GSEventIndustryOpen.Convert(ev).GetIndustryID();
-        if (GSIndustry.GetIndustryType(id) in rt) {
-          local cl = this.FreightCargoList(id);
-          if (!cl.IsEmpty()) {
-            ic[id]      <- cl;
-            tracked[id] <- lcount;
-            if (do_log) {
-              this.Log(3, "New industry: " + GSIndustry.GetName(id) +
-                       " (ID:" + id + ") level=" + GSIndustry.GetProductionLevel(id));
-            }
-          }
-        }
-      } else if (et == GSEvent.ET_INDUSTRY_CLOSE) {
+        if (id in this.id_cargo) continue;
+        if (!GSIndustry.IsValidIndustry(id)) continue;
+        if (!GSIndustryType.IsRawIndustry(GSIndustry.GetIndustryType(id))) continue;
+        local cl = ProductionBooster.FreightCargoList(id);
+        if (cl.IsEmpty()) continue;
+        this.RegisterIndustry(id, cl);
+        GSIndustry.SetControlFlags(id, ProductionBooster.OWN_FLAGS);
+        this.Log(3, "New industry: " + GSIndustry.GetName(id) +
+                 " (ID:" + id + ") level=" + GSIndustry.GetProductionLevel(id));
+      }
+
+      if (et == GSEvent.ET_INDUSTRY_CLOSE) {
         local id = GSEventIndustryClose.Convert(ev).GetIndustryID();
-        if (id in tracked) {
-          delete tracked[id];
-          delete ic[id];
-        }
+        if (!(id in this.id_cargo)) continue;
+        this.UnregisterIndustry(id);
+        this.Log(4, "Industry closed: ID:" + id);
       }
     }
+  }
 
-    foreach (id, birth_loop in tracked) {
-      local cargo_types = ic[id];
+  function ProcessIndustries() {
+    this.ReadSettings();
+    this.DrainEvents();
+
+    if (this.invalid_settings) return;
+
+    local cur_date = GSDate.GetCurrentDate();
+    local cur_year = GSDate.GetYear(cur_date);
+
+    foreach (id, cargo_types in this.id_cargo) {
+      if (!GSIndustry.IsValidIndustry(id)) continue;
+      if (this.IsDormant(id, cur_year)) continue;
+
+      if (this.GetOpsTillSuspend() < ProductionBooster.OPS_RESERVE) this.Sleep(1);
+
+      if (cargo_types.IsEmpty()) {
+        cargo_types = ProductionBooster.FreightCargoList(id);
+        if (cargo_types.IsEmpty()) {
+          this.Log(4, "Cargo not ready: " + GSIndustry.GetName(id) + " (ID:" + id + ")");
+          continue;
+        }
+        this.id_cargo[id]   = cargo_types;
+        this.id_can_inc[id] = GSIndustryType.ProductionCanIncrease(GSIndustry.GetIndustryType(id));
+      }
+
+      if (GSIndustry.GetAmountOfStationsAround(id) == 0) continue;
+
       local total_pct   = 0;
       local cargo_count = 0;
       foreach (cargo_id, _ in cargo_types) {
@@ -139,53 +197,47 @@ class ProductionBooster extends GSController {
 
       local avg_pct       = total_pct / cargo_count;
       local current_level = GSIndustry.GetProductionLevel(id);
-      local new_level     = current_level;
+      local new_level;
 
-      if (avg_pct >= inc_thr) {
-        new_level = min(current_level + step, max_lvl);
-      } else if (avg_pct < dec_thr &&
-                 (birth_loop < 0 || (lcount - birth_loop) >= grace)) {
-        new_level = max(current_level - step, clamp_min);
+      if (avg_pct >= this.increase_threshold && this.id_can_inc[id]) {
+        new_level = min(current_level + this.step_size, this.max_level);
+      } else if (avg_pct < this.decrease_threshold && !this.IsInGrace(id, cur_date)) {
+        new_level = max(current_level - this.step_size, this.min_level);
+      } else {
+        continue;
       }
-
-      if (new_level == current_level) continue;
 
       if (GSIndustry.SetProductionLevel(id, new_level, false, null)) {
-        if (do_log) {
-          this.Log(3, GSIndustry.GetName(id) + " (ID:" + id + ") " +
-                   ((new_level > current_level) ? "+" : "") +
-                   (new_level - current_level) +
-                   " => " + new_level + " (" + avg_pct + "%)");
-        }
+        this.Log(3, GSIndustry.GetName(id) + " (ID:" + id + ") " +
+                 ((new_level > current_level) ? "+" : "") +
+                 (new_level - current_level) + " => " + new_level + " (" + avg_pct + "%)");
+      } else {
+        this.Log(2, "SetProductionLevel(" + new_level + ") failed for ID:" + id +
+                 " - industry may have closed mid-tick.");
       }
     }
-
-    this.loop_count++;
   }
 
   function Log(level, message) {
     if (level > this.log_level) return;
-    if      (level == 1) GSLog.Error(message);
-    else if (level == 2) GSLog.Warning(message);
-    else if (level == 3) GSLog.Info(message);
-    else                 GSLog.Debug(message);
+    if (level == 2) GSLog.Warning(message);
+    else            GSLog.Info(message);
   }
 
   function Save() {
-    return {
-      industry_tracked = this.industry_tracked,
-      loop_count       = this.loop_count
-    };
+    return { id_cargo = this.id_cargo, id_can_inc = this.id_can_inc };
   }
 
   function Load(version, data) {
-    if ("loop_count" in data) this.loop_count = data.loop_count;
-    if ("industry_tracked" in data) {
-      foreach (id, val in data.industry_tracked) {
-        this.industry_tracked[id] <- (typeof val == "bool") ? -1 : val;
+    if ("id_cargo" in data && typeof data.id_cargo == "table") {
+      foreach (id, cl in data.id_cargo) {
+        if (typeof id == "integer") this.id_cargo[id] <- cl;
+      }
+    }
+    if ("id_can_inc" in data && typeof data.id_can_inc == "table") {
+      foreach (id, can_inc in data.id_can_inc) {
+        if (typeof id == "integer") this.id_can_inc[id] <- can_inc;
       }
     }
   }
 }
-
-
