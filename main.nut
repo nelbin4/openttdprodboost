@@ -52,6 +52,21 @@ class ProductionBooster extends GSController {
     delete this.id_can_inc[id];
   }
 
+  function ApplyOwnFlagsBatch() {
+    local _mode = GSAsyncMode(true);
+    foreach (id, _ in this.id_cargo) {
+      GSIndustry.SetControlFlags(id, ProductionBooster.OWN_FLAGS);
+    }
+  }
+
+  function PurgeStalledIndustries() {
+    local stale = [];
+    foreach (id, _ in this.id_cargo) {
+      if (!GSIndustry.IsValidIndustry(id)) stale.push(id);
+    }
+    foreach (id in stale) this.UnregisterIndustry(id);
+  }
+
   function IsDormant(id, cur_year) {
     if (this.is_wallclock) return false;
     local last_year = GSIndustry.GetLastProductionYear(id);
@@ -59,6 +74,7 @@ class ProductionBooster extends GSController {
   }
 
   function IsInGrace(id, cur_date) {
+    if (this.is_wallclock) return false;
     local built = GSIndustry.GetConstructionDate(id);
     return GSDate.IsValidDate(built) &&
            (cur_date - built) < (this.grace_period_months * ProductionBooster.DAYS_PER_MONTH);
@@ -112,18 +128,8 @@ class ProductionBooster extends GSController {
       this.RegisterIndustry(id, cl);
     }
 
-    local stale = [];
-    foreach (id, _ in this.id_cargo) {
-      if (!GSIndustry.IsValidIndustry(id)) stale.push(id);
-    }
-    foreach (id in stale) this.UnregisterIndustry(id);
-
-    {
-      local async_mode = GSAsyncMode(true);
-      foreach (id, _ in this.id_cargo) {
-        GSIndustry.SetControlFlags(id, ProductionBooster.OWN_FLAGS);
-      }
-    }
+    this.PurgeStalledIndustries();
+    this.ApplyOwnFlagsBatch();
     this.Log(3, "Tracking " + this.id_cargo.len() + " primary industries.");
 
     while (true) {
@@ -140,7 +146,6 @@ class ProductionBooster extends GSController {
       if (et == GSEvent.ET_INDUSTRY_OPEN) {
         local id = GSEventIndustryOpen.Convert(ev).GetIndustryID();
         if (id in this.id_cargo) continue;
-        if (!GSIndustry.IsValidIndustry(id)) continue;
         if (!GSIndustryType.IsRawIndustry(GSIndustry.GetIndustryType(id))) continue;
         local cl = ProductionBooster.FreightCargoList(id);
         if (cl.IsEmpty()) continue;
@@ -148,15 +153,24 @@ class ProductionBooster extends GSController {
         GSIndustry.SetControlFlags(id, ProductionBooster.OWN_FLAGS);
         this.Log(3, "New industry: " + GSIndustry.GetName(id) +
                  " (ID:" + id + ") level=" + GSIndustry.GetProductionLevel(id));
-      }
-
-      if (et == GSEvent.ET_INDUSTRY_CLOSE) {
+      } else if (et == GSEvent.ET_INDUSTRY_CLOSE) {
         local id = GSEventIndustryClose.Convert(ev).GetIndustryID();
         if (!(id in this.id_cargo)) continue;
         this.UnregisterIndustry(id);
         this.Log(4, "Industry closed: ID:" + id);
       }
     }
+  }
+
+  function AvgTransportPct(id, cargo_types) {
+    local total = 0;
+    local count = 0;
+    foreach (cargo_id, _ in cargo_types) {
+      if (GSIndustry.GetLastMonthProduction(id, cargo_id) <= 0) continue;
+      total += GSIndustry.GetLastMonthTransportedPercentage(id, cargo_id);
+      count++;
+    }
+    return count > 0 ? total / count : -1;
   }
 
   function ProcessIndustries() {
@@ -169,10 +183,10 @@ class ProductionBooster extends GSController {
     local cur_year = GSDate.GetYear(cur_date);
 
     foreach (id, cargo_types in this.id_cargo) {
+      if (this.GetOpsTillSuspend() < ProductionBooster.OPS_RESERVE) this.Sleep(1);
+
       if (!GSIndustry.IsValidIndustry(id)) continue;
       if (this.IsDormant(id, cur_year)) continue;
-
-      if (this.GetOpsTillSuspend() < ProductionBooster.OPS_RESERVE) this.Sleep(1);
 
       if (cargo_types.IsEmpty()) {
         cargo_types = ProductionBooster.FreightCargoList(id);
@@ -186,31 +200,24 @@ class ProductionBooster extends GSController {
 
       if (GSIndustry.GetAmountOfStationsAround(id) == 0) continue;
 
-      local total_pct   = 0;
-      local cargo_count = 0;
-      foreach (cargo_id, _ in cargo_types) {
-        if (GSIndustry.GetLastMonthProduction(id, cargo_id) <= 0) continue;
-        total_pct += GSIndustry.GetLastMonthTransportedPercentage(id, cargo_id);
-        cargo_count++;
-      }
-      if (cargo_count == 0) continue;
+      local avg_pct = this.AvgTransportPct(id, cargo_types);
+      if (avg_pct < 0) continue;
 
-      local avg_pct       = total_pct / cargo_count;
       local current_level = GSIndustry.GetProductionLevel(id);
-      local new_level;
+      local new_level     = current_level;
 
       if (avg_pct >= this.increase_threshold && this.id_can_inc[id]) {
         new_level = min(current_level + this.step_size, this.max_level);
       } else if (avg_pct < this.decrease_threshold && !this.IsInGrace(id, cur_date)) {
         new_level = max(current_level - this.step_size, this.min_level);
-      } else {
-        continue;
       }
 
+      if (new_level == current_level) continue;
+
       if (GSIndustry.SetProductionLevel(id, new_level, false, null)) {
+        local delta = new_level - current_level;
         this.Log(3, GSIndustry.GetName(id) + " (ID:" + id + ") " +
-                 ((new_level > current_level) ? "+" : "") +
-                 (new_level - current_level) + " => " + new_level + " (" + avg_pct + "%)");
+                 (delta > 0 ? "+" : "") + delta + " => " + new_level + " (" + avg_pct + "%)");
       } else {
         this.Log(2, "SetProductionLevel(" + new_level + ") failed for ID:" + id +
                  " - industry may have closed mid-tick.");
@@ -220,24 +227,27 @@ class ProductionBooster extends GSController {
 
   function Log(level, message) {
     if (level > this.log_level) return;
-    if (level == 2) GSLog.Warning(message);
-    else            GSLog.Info(message);
+    if      (level == 1) GSLog.Error(message);
+    else if (level == 2) GSLog.Warning(message);
+    else                 GSLog.Info(message);
   }
 
   function Save() {
     return { id_cargo = this.id_cargo, id_can_inc = this.id_can_inc };
   }
 
-  function Load(version, data) {
-    if ("id_cargo" in data && typeof data.id_cargo == "table") {
-      foreach (id, cl in data.id_cargo) {
-        if (typeof id == "integer") this.id_cargo[id] <- cl;
-      }
+  function RestoreTable(data, key, target) {
+    if (!(key in data) || typeof data[key] != "table") return;
+    foreach (id, val in data[key]) {
+      if (typeof id == "integer") target[id] <- val;
     }
-    if ("id_can_inc" in data && typeof data.id_can_inc == "table") {
-      foreach (id, can_inc in data.id_can_inc) {
-        if (typeof id == "integer") this.id_can_inc[id] <- can_inc;
-      }
+  }
+
+  function Load(version, data) {
+    this.RestoreTable(data, "id_cargo",   this.id_cargo);
+    this.RestoreTable(data, "id_can_inc", this.id_can_inc);
+    foreach (id, _ in this.id_cargo) {
+      if (!(id in this.id_can_inc)) this.id_can_inc[id] <- false;
     }
   }
 }
