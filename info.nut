@@ -3,7 +3,7 @@ require("version.nut");
 class ProductionBooster extends GSInfo {
   function GetAuthor()      { return "nelbin4"; }
   function GetName()        { return "Production Booster"; }
-  function GetDescription() { return "Dynamically adjusts primary industry production levels based on cargo transport efficiency. Production increases when transport rates are high and decreases when transport rates are low, encouraging better network coverage."; }
+  function GetDescription() { return "Adjusts primary industry production levels each economy month based on cargo transport efficiency. Industries with high transport rates grow; those with low rates shrink. Fully configurable thresholds, step size, production bounds, and grace period for new industries. Compatible with calendar and wallclock timekeeping modes. Requires OpenTTD 15.0 or later."; }
   function GetVersion()     { return SELF_VERSION; }
   function GetDate()        { return "2026-03-05"; }
   function CreateInstance() { return "ProductionBooster"; }
