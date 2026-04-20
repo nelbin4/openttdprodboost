@@ -2,7 +2,7 @@
 
 An [OpenTTD](https://www.openttd.org/) GameScript that adjusts primary industry production levels based on how efficiently you transport their cargo. Industries served well grow; industries neglected shrink.
 
-Requires **OpenTTD 15.0** or later (GameScript API v15).
+Requires **OpenTTD 14.0** or later (GameScript API v15).
 
 ---
 
