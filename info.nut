@@ -62,7 +62,7 @@ class ProductionBooster extends GSInfo {
     });
     AddSetting({
       name = "batch_divisor",
-      description = "Industries processed per wake-up = tracked/this value. Higher = lighter CPU, slower reaction",
+      description = "Controls wake-up frequency (batches stay a fixed size). Higher = fewer wake-ups, lighter CPU, slower reaction",
       min_value = 5,
       max_value = 100,
       default_value = 30,
