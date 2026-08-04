@@ -10,11 +10,21 @@ class ProductionBooster extends GSController {
   grace_period_months = 3;
   log_level           = 3;
   batch_divisor       = 30;
+  sleep_ticks         = 74;
   invalid_settings    = false;
   is_wallclock        = false;
 
-  static SLEEP_TICKS      = 74;          // wake up ~daily instead of monthly
-  static DAYS_PER_MONTH   = 30;
+  static TICKS_PER_DAY     = 74;
+  static DAYS_PER_MONTH    = 30;
+  static TICKS_PER_MONTH   = 2220;       // = TICKS_PER_DAY * DAYS_PER_MONTH (Squirrel statics can't reference other statics)
+  // REFERENCE_DIVISOR anchors batch_divisor's default (30) to the original
+  // "wake daily, full pass ~monthly" cadence. batch_size is fixed relative
+  // to this constant (NOT to batch_divisor) so that changing batch_divisor
+  // purely stretches/compresses wake frequency -- monotonically, across the
+  // whole 5-100 setting range -- instead of also reshaping batch size in a
+  // way that fights the frequency change (which is what caused the old
+  // formula to invert itself above divisor=30).
+  static REFERENCE_DIVISOR = 30;
   static OPS_RESERVE      = 2000;
   static OPS_CHECK_STRIDE = 5;           // only poll GetOpsTillSuspend every N industries in a batch
   static OWN_FLAGS        = GSIndustry.INDCTL_NO_PRODUCTION_INCREASE |
@@ -112,6 +122,14 @@ class ProductionBooster extends GSController {
     this.max_level           = min(GSController.GetSetting("max_level"), 128);
     this.grace_period_months = GSController.GetSetting("grace_period_months");
     this.batch_divisor       = max(GSController.GetSetting("batch_divisor"), 1);
+    // sleep_ticks scales linearly with batch_divisor around the reference
+    // point (divisor=30 -> daily, matching the original cadence). This is
+    // monotonic across the whole setting range: lower divisor -> shorter
+    // sleep -> more frequent, larger-batch wakes (faster reaction, more
+    // overhead); higher divisor -> longer sleep -> fewer, smaller-batch
+    // wakes (slower reaction, less overhead). No collapsing/plateau.
+    this.sleep_ticks         = max(1,
+        ProductionBooster.TICKS_PER_DAY * this.batch_divisor / ProductionBooster.REFERENCE_DIVISOR);
 
     local invalid = this.increase_threshold <= this.decrease_threshold;
     if (invalid != this.invalid_settings) {
@@ -131,10 +149,11 @@ class ProductionBooster extends GSController {
     return level <= this.log_level;
   }
 
-  // Loops (instead of a single Sleep(1)) until enough ops headroom is back,
-  // so we don't risk stalling under sustained low CPU allowance.
+  // Yields once if ops headroom is low. A single Sleep(1) -- not a loop --
+  // to avoid turning this into a busy-loop under sustained low headroom
+  // (each GetOpsTillSuspend() call itself costs ops).
   function ThrottleIfLow() {
-    while (this.GetOpsTillSuspend() < ProductionBooster.OPS_RESERVE) {
+    if (this.GetOpsTillSuspend() < ProductionBooster.OPS_RESERVE) {
       this.Sleep(1);
     }
   }
@@ -152,7 +171,8 @@ class ProductionBooster extends GSController {
              "step=" + this.step_size + " " +
              "range=" + this.min_level + "-" + this.max_level + " " +
              "grace=" + this.grace_period_months + "mo " +
-             "batch_divisor=" + this.batch_divisor);
+             "batch_divisor=" + this.batch_divisor + " " +
+             "wake_every=" + this.sleep_ticks + "ticks");
 
     foreach (id, _ in GSIndustryList(ProductionBooster.IsRawIndustryFilter)) {
       if (id in this.id_set) {
@@ -173,7 +193,7 @@ class ProductionBooster extends GSController {
     this.Log(3, "Tracking " + this.id_set.len() + " primary industries.");
 
     while (true) {
-      this.Sleep(ProductionBooster.SLEEP_TICKS);
+      this.Sleep(this.sleep_ticks);
       this.ProcessIndustriesBatch();
     }
   }
@@ -249,19 +269,27 @@ class ProductionBooster extends GSController {
 
     if (GSIndustry.SetProductionLevel(id, new_level, false, null)) {
       local delta = new_level - current_level;
-      this.Log(3, GSIndustry.GetName(id) + " (ID:" + id + ") " +
-               (delta > 0 ? "+" : "") + delta + " => " + new_level + " (" + avg_pct + "%)");
+      if (this.ShouldLog(3)) {
+        this.Log(3, GSIndustry.GetName(id) + " (ID:" + id + ") " +
+                 (delta > 0 ? "+" : "") + delta + " => " + new_level + " (" + avg_pct + "%)");
+      }
     } else {
-      this.Log(2, "SetProductionLevel(" + new_level + ") failed for ID:" + id +
-               " - industry may have closed mid-tick.");
+      if (this.ShouldLog(2)) {
+        this.Log(2, "SetProductionLevel(" + new_level + ") failed for ID:" + id +
+                 " - industry may have closed mid-tick.");
+      }
     }
   }
 
-  // Round-robin: only walk a slice of tracked industries per wake-up,
-  // so CPU cost per tick stays flat regardless of map size. A full
-  // pass over all industries still completes roughly once a month
-  // (SLEEP_TICKS * batch_divisor ~= old monthly cadence). Higher
-  // batch_divisor = lighter per-tick CPU but slower reaction time.
+  // Round-robin: walk a fixed-size slice of tracked industries per wake-up
+  // (batch_size is anchored to REFERENCE_DIVISOR, not to batch_divisor --
+  // see ReadSettings). batch_divisor instead controls sleep_ticks, i.e. how
+  // often we wake at all. At the default divisor (30) a full pass takes
+  // ~REFERENCE_DIVISOR wakes at a ~daily cadence, matching the original
+  // "full pass ~monthly" behaviour. Raising batch_divisor stretches
+  // sleep_ticks proportionally -- fewer, equally-sized wakes per month, so
+  // less fixed per-wake overhead, at the cost of a proportionally longer
+  // full-pass duration (slower reaction). Lowering it does the reverse.
   function ProcessIndustriesBatch() {
     this.ReadSettings();
     this.DrainEvents();
@@ -270,13 +298,17 @@ class ProductionBooster extends GSController {
     if (this.id_set.len() == 0) return;
 
     if (this.scan_ids == null || this.scan_pos >= this.scan_ids.len()) {
+      // Starting a fresh pass -- cheap moment to drop any industries that
+      // went invalid without firing ET_INDUSTRY_CLOSE (rare, but keeps
+      // scan_ids/batch sizing accurate over long games).
+      this.PurgeStalledIndustries();
       this.scan_ids = [];
       foreach (id, _ in this.id_set) this.scan_ids.push(id);
       this.scan_pos = 0;
       if (this.scan_ids.len() == 0) return;
     }
 
-    local batch_size = max(1, this.scan_ids.len() / this.batch_divisor);
+    local batch_size = max(1, this.scan_ids.len() / ProductionBooster.REFERENCE_DIVISOR);
     local end = min(this.scan_pos + batch_size, this.scan_ids.len());
 
     local cur_date = GSDate.GetCurrentDate();
