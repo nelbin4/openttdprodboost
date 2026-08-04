@@ -1,15 +1,16 @@
 require("version.nut");
 
 class ProductionBooster extends GSInfo {
-  function GetAuthor()      { return "nelbin4"; }
-  function GetName()        { return "Production Booster"; }
+  function GetAuthor() { return "nelbin4"; }
+  function GetName() { return "Production Booster"; }
   function GetDescription() { return "Adjusts primary industry production levels each economy month based on cargo transport efficiency. Industries with high transport rates grow; those with low rates shrink. Fully configurable thresholds, step size, production bounds, and grace period for new industries. Compatible with calendar and wallclock timekeeping modes. Requires OpenTTD 15.0 or later."; }
-  function GetVersion()     { return SELF_VERSION; }
-  function GetDate()        { return "2026-03-05"; }
+  function GetVersion() { return SELF_VERSION; }
+  function GetDate() { return "2026-03-05"; }
   function CreateInstance() { return "ProductionBooster"; }
-  function GetShortName()   { return "PRDB"; }
-  function GetAPIVersion()  { return "15"; }
-  function GetURL()         { return "https://github.com/nelbin4/openttdprodboost"; }
+  function GetShortName() { return "PRDB"; }
+  function GetAPIVersion() { return "15"; }
+  function GetURL() { return "https://github.com/nelbin4/openttdprodboost"; }
+
   function GetSettings() {
     AddSetting({
       name = "increase_threshold",
@@ -60,6 +61,14 @@ class ProductionBooster extends GSInfo {
       flags = CONFIG_INGAME
     });
     AddSetting({
+      name = "batch_divisor",
+      description = "Industries processed per wake-up = tracked/this value. Higher = lighter CPU, slower reaction",
+      min_value = 5,
+      max_value = 100,
+      default_value = 30,
+      flags = CONFIG_INGAME
+    });
+    AddSetting({
       name = "log_level",
       description = "Log level (1=error, 2=warning, 3=info, 4=debug)",
       min_value = 1,
@@ -69,4 +78,5 @@ class ProductionBooster extends GSInfo {
     });
   }
 }
+
 RegisterGS(ProductionBooster());
