@@ -8,7 +8,7 @@ Requires **OpenTTD 15.0** or later (GameScript API v15).
 
 ## How it works
 
-Once per economy month the script checks every tracked primary industry:
+The script continuously sweeps every tracked primary industry in small batches (see [Performance](#performance) below), checking each roughly once per economy month:
 
 - If last month's average transport percentage is at or above `increase_threshold`, production level rises by `step_size` (up to `max_level`).
 - If it is below `decrease_threshold` and the industry is past its grace period, production level falls by `step_size` (down to `min_level`).
@@ -32,6 +32,7 @@ All settings are adjustable in-game from the GameScript Parameters window withou
 | `min_level` | 8 | 4–64 | Minimum production level (API hard floor: 4) |
 | `max_level` | 128 | 4–128 | Maximum production level (API hard ceiling: 128) |
 | `grace_period_months` | 3 | 0–12 | Months after opening before an industry can be decreased |
+| `batch_divisor` | 30 | 5–100 | Tracked industries processed per wake-up = tracked ÷ this value. Higher = lighter CPU load per tick, slower reaction to transport changes |
 | `log_level` | 3 | 1–4 | 1 = errors only, 2 = warnings, 3 = info, 4 = debug |
 
 If `increase_threshold` is set lower than or equal to `decrease_threshold`, all production adjustments are suspended and a warning is logged until the conflict is resolved.
@@ -84,13 +85,21 @@ The OpenTTD data directory is typically:
 
 ---
 
-## Technical notes
+## Performance
 
-The script runs once per economy month (`74 × 30 = 2220` ticks). Each cycle it reads current settings, drains the event queue for new or closed industries, then iterates all tracked industries. Ops budget is monitored via `GetOpsTillSuspend()` and the script yields with `Sleep(1)` before each industry if the reserve drops too low, preventing mid-iteration suspension.
+Production Booster is built to stay light even on large maps with hundreds of primary industries.
 
-New industries are picked up immediately via `ET_INDUSTRY_OPEN`. Closed industries are released via `ET_INDUSTRY_CLOSE` — flags are cleared while the industry is still valid, before the engine removes it. All control flags are applied in a single `GSAsyncMode` batch at startup to minimise command overhead.
+Instead of processing every tracked industry in one pass, the script wakes up roughly once a day (74 ticks) and works through a round-robin slice of the tracked industries — `tracked ÷ batch_divisor` industries per wake-up. A full sweep across every tracked industry still completes roughly once a month, but the CPU cost of any single wake-up stays flat regardless of map size, avoiding the large periodic stalls a full-map pass in one tick would otherwise cause. `batch_divisor` (default 30) controls this trade-off directly — raise it for an even lighter per-tick load at the cost of slower reaction to changing transport percentages, or lower it to react faster at a higher per-tick cost.
 
-Save/load state includes the full industry tracking tables. Saves from versions that predate the `id_can_inc` table are handled with a backward-compatible fallback that inserts a safe default for every loaded entry.
+Each industry's freight cargo types are looked up once, when the industry is first registered, and cached as a plain array of cargo IDs rather than re-derived from the game's cargo-list API on every pass. Production-changing commands are issued in an async command batch to avoid blocking on each individual result, and the remaining ops-budget check (`GetOpsTillSuspend()`) is polled periodically rather than before every single industry, with the script yielding via `Sleep()` whenever the reserve runs low to prevent mid-batch suspension.
+
+New industries are picked up immediately via `ET_INDUSTRY_OPEN`. Closed industries are released via `ET_INDUSTRY_CLOSE` — flags are cleared while the industry is still valid, before the engine removes it. All control flags are applied in a single async batch at startup to minimise command overhead.
+
+---
+
+## Save/load
+
+Save data is limited to plain values (industry IDs, cached cargo-ID arrays, and a couple of per-industry flags) — nothing that depends on non-persistable game-script objects. Saves from older versions of the script are handled with backward-compatible fallbacks: any industry missing a cached cargo-ID array has one re-derived the first time it's next processed, and any industry missing a `ProductionCanIncrease` entry gets a safe default. The round-robin scan order itself isn't saved — it's cheap to rebuild and simply starts fresh on load.
 
 ---
 
