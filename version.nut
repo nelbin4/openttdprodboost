@@ -1,1 +1,1 @@
-SELF_VERSION <- 7;
+SELF_VERSION <- 8;
