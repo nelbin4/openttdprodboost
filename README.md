@@ -96,10 +96,6 @@ The script saves plain values only: industry IDs, cached cargo-ID arrays, and pr
 
 Older saved data may be migrated when OpenTTD provides it to the new script. If OpenTTD considers an older GameScript version incompatible, it may discard the old script state; v10 then rebuilds its industry tracking from the current map.
 
-## Version
-
-This release is **Production Booster v10**. The BaNaNaS-visible version is defined in `version.nut`.
-
 ## License
 
 [GNU General Public License v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
