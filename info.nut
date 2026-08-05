@@ -5,7 +5,7 @@ class ProductionBooster extends GSInfo {
   function GetName() { return "Production Booster"; }
   function GetDescription() { return "Adjusts primary industry production levels each economy month based on cargo transport efficiency. Industries with high transport rates grow; those with low rates shrink. Fully configurable thresholds, step size, production bounds, and grace period for new industries. Compatible with calendar and wallclock timekeeping modes. Requires OpenTTD 15.0 or later."; }
   function GetVersion() { return SELF_VERSION; }
-  function GetDate() { return "2026-03-05"; }
+  function GetDate() { return "2026-08-05"; }
   function CreateInstance() { return "ProductionBooster"; }
   function GetShortName() { return "PRDB"; }
   function GetAPIVersion() { return "15"; }
