@@ -1,43 +1,38 @@
 # Production Booster
 
-An [OpenTTD](https://www.openttd.org/) GameScript that adjusts primary industry production levels based on how efficiently you transport their cargo. Industries served well grow; industries neglected shrink.
+Production Booster is an [OpenTTD](https://www.openttd.org/) GameScript that adjusts primary industry production based on transport efficiency. Well-served industries grow; neglected industries shrink.
 
-Requires **OpenTTD 15.0** or later (GameScript API v15).
+Requires **OpenTTD 15.0 or later** and GameScript API v15.
 
----
+## How It Works
 
-## How it works
+The script tracks raw industries that produce freight cargo and processes them in round-robin batches.
 
-The script continuously sweeps every tracked primary industry in small batches (see [Performance](#performance) below), checking each roughly once per economy month:
+- If last month's average transported percentage is at least `increase_threshold`, production increases by `step_size`.
+- If it is below `decrease_threshold`, production decreases by `step_size` after the grace period.
+- Production remains within `min_level` and `max_level`.
+- Industries without nearby stations are skipped.
+- Industries with no output for two or more consecutive economy years are skipped in calendar mode.
+- New industries are registered immediately; closed industries are removed safely.
 
-- If last month's average transport percentage is at or above `increase_threshold`, production level rises by `step_size` (up to `max_level`).
-- If it is below `decrease_threshold` and the industry is past its grace period, production level falls by `step_size` (down to `min_level`).
-- Otherwise nothing changes.
-
-Only raw/primary industries that produce freight cargo are tracked. Industries with no stations nearby, industries that have had no output for two or more consecutive economy years, and industries still within their grace period are all skipped.
-
-Production level is the OpenTTD multiplier in the range 4–128. Default game behaviour sits around level 16. The script takes full control of each tracked industry's production via `INDCTL_EXTERNAL_PROD_LEVEL` and suppresses the game's own random fluctuations and closures.
-
----
+The script takes control of tracked industry production with `INDCTL_EXTERNAL_PROD_LEVEL` and suppresses the game's random production changes and closures.
 
 ## Settings
 
-All settings are adjustable in-game from the GameScript Parameters window without restarting.
+Settings can be changed in-game from the GameScript Parameters window.
 
 | Setting | Default | Range | Description |
-|---|---|---|---|
-| `increase_threshold` | 80 | 50–100 | Transport % required to increase production |
-| `decrease_threshold` | 60 | 0–95 | Transport % below which production decreases |
-| `step_size` | 4 | 1–16 | Production level change per adjustment cycle |
-| `min_level` | 8 | 4–64 | Minimum production level (API hard floor: 4) |
-| `max_level` | 128 | 4–128 | Maximum production level (API hard ceiling: 128) |
-| `grace_period_months` | 3 | 0–12 | Months after opening before an industry can be decreased |
-| `batch_divisor` | 30 | 5–100 | Tracked industries processed per wake-up = tracked ÷ this value. Higher = lighter CPU load per tick, slower reaction to transport changes |
-| `log_level` | 3 | 1–4 | 1 = errors only, 2 = warnings, 3 = info, 4 = debug |
+|---|---:|---:|---|
+| `increase_threshold` | 80 | 50–100 | Transport percentage required to increase production |
+| `decrease_threshold` | 60 | 0–95 | Transport percentage below which production decreases |
+| `step_size` | 4 | 1–16 | Production level change per adjustment |
+| `min_level` | 8 | 4–64 | Minimum production level |
+| `max_level` | 128 | 4–128 | Maximum production level |
+| `grace_period_months` | 3 | 0–12 | Time after opening before production may decrease |
+| `batch_divisor` | 30 | 5–100 | Controls wake frequency; higher values reduce CPU overhead but slow reaction time |
+| `log_level` | 3 | 1–4 | 1 = errors, 2 = warnings, 3 = info, 4 = debug |
 
-If `increase_threshold` is set lower than or equal to `decrease_threshold`, all production adjustments are suspended and a warning is logged until the conflict is resolved.
-
----
+If `increase_threshold` is less than or equal to `decrease_threshold`, production changes are suspended and a warning is logged.
 
 ## Compatibility
 
@@ -45,27 +40,25 @@ If `increase_threshold` is set lower than or equal to `decrease_threshold`, all 
 |---|---|
 | OpenTTD | 15.0 or later |
 | GameScript API | v15 |
-| Industry sets | Vanilla and NewGRF (respects `ProductionCanIncrease` per industry type) |
-| Timekeeping | Calendar mode and wallclock mode both supported |
+| Industry sets | Vanilla and NewGRF |
+| Timekeeping | Calendar and wallclock modes |
 | Multiplayer | Supported |
 
-In wallclock mode the dormancy check and grace period check are both disabled because construction dates and last-production years use incompatible time coordinate systems in that mode. All other logic runs normally.
-
----
+In wallclock mode, dormancy and grace-period checks are disabled because construction dates and production years use calendar coordinates.
 
 ## Installation
 
-**From BaNaNaS (in-game content browser):**
+### BaNaNaS
 
-Search for *Production Booster* in the Game Scripts category and download directly.
+Search for **Production Booster** in the in-game Game Scripts content browser.
 
-**Manual:**
+### Manual
 
-1. Create the folder `<OpenTTD data dir>/game/Production_Booster/`.
-2. Copy `info.nut`, `main.nut`, and `version.nut` into that folder.
-3. Launch OpenTTD, start a new game, open **Game Script Settings**, and select Production Booster.
+1. Create `<OpenTTD data dir>/game/Production_Booster/`.
+2. Copy `info.nut`, `main.nut`, and `version.nut` into that directory.
+3. Start a game and select Production Booster in **GameScript Settings**.
 
-The OpenTTD data directory is typically:
+Typical OpenTTD data directories:
 
 | OS | Path |
 |---|---|
@@ -73,40 +66,42 @@ The OpenTTD data directory is typically:
 | macOS | `~/Documents/OpenTTD/` |
 | Linux | `~/.openttd/` |
 
----
-
 ## Files
 
 | File | Purpose |
 |---|---|
-| `info.nut` | Script metadata and settings declarations |
-| `main.nut` | All runtime logic |
-| `version.nut` | Version constant shared by both files |
-
----
+| `info.nut` | Metadata and in-game settings |
+| `main.nut` | Runtime controller and industry processing |
+| `version.nut` | Shared script version constant |
 
 ## Performance
 
-Production Booster is built to stay light even on large maps with hundreds of primary industries.
+Production Booster avoids a full-map industry scan in one tick.
 
-Instead of processing every tracked industry in one pass, the script wakes up roughly once a day (74 ticks) and works through a round-robin slice of the tracked industries — `tracked ÷ batch_divisor` industries per wake-up. A full sweep across every tracked industry still completes roughly once a month, but the CPU cost of any single wake-up stays flat regardless of map size, avoiding the large periodic stalls a full-map pass in one tick would otherwise cause. `batch_divisor` (default 30) controls this trade-off directly — raise it for an even lighter per-tick load at the cost of slower reaction to changing transport percentages, or lower it to react faster at a higher per-tick cost.
+At the default `batch_divisor` of 30, each wake processes approximately `tracked industries / 30`. The batch size is anchored to `REFERENCE_DIVISOR`, while `batch_divisor` scales the sleep interval. This keeps the per-wake batch size stable and changes how often the script wakes.
 
-Each industry's freight cargo types are looked up once, when the industry is first registered, and cached as a plain array of cargo IDs rather than re-derived from the game's cargo-list API on every pass. Production-changing commands are issued in an async command batch to avoid blocking on each individual result, and the remaining ops-budget check (`GetOpsTillSuspend()`) is polled periodically rather than before every single industry, with the script yielding via `Sleep()` whenever the reserve runs low to prevent mid-batch suspension.
+- Lower `batch_divisor`: more frequent processing and faster reaction, with more wake overhead.
+- Higher `batch_divisor`: fewer wake-ups and lower overhead, with slower reaction.
+- `GetOpsTillSuspend()` is checked every 10 industries and the script yields with `Sleep()` when the reserve is low.
+- Freight cargo IDs are cached as plain integer arrays.
+- Production commands run synchronously so their return values are meaningful.
+- Startup control flags are applied in one asynchronous batch.
+- New industries are appended to the current scan without restarting the round-robin pass.
+- Duplicate pending scan entries are prevented with an O(1) pending-ID table.
+- Stale-industry validation runs every four completed passes; normal open/close events handle routine tracking.
 
-New industries are picked up immediately via `ET_INDUSTRY_OPEN`. Closed industries are released via `ET_INDUSTRY_CLOSE` — flags are cleared while the industry is still valid, before the engine removes it. All control flags are applied in a single async batch at startup to minimise command overhead.
+## Save and Load
 
----
+The script saves plain values only: industry IDs, cached cargo-ID arrays, and production capability flags. Scan order and pending scan state are rebuilt after loading.
 
-## Save/load
+Older saved data may be migrated when OpenTTD provides it to the new script. If OpenTTD considers an older GameScript version incompatible, it may discard the old script state; v10 then rebuilds its industry tracking from the current map.
 
-Save data is limited to plain values (industry IDs, cached cargo-ID arrays, and a couple of per-industry flags) — nothing that depends on non-persistable game-script objects. Saves from older versions of the script are handled with backward-compatible fallbacks: any industry missing a cached cargo-ID array has one re-derived the first time it's next processed, and any industry missing a `ProductionCanIncrease` entry gets a safe default. The round-robin scan order itself isn't saved — it's cheap to rebuild and simply starts fresh on load.
+## Version
 
----
+This release is **Production Booster v10**. The BaNaNaS-visible version is defined in `version.nut`.
 
 ## License
 
 [GNU General Public License v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
 
----
-
-*Created by [nelbin4](https://github.com/nelbin4)*
+Created by [nelbin4](https://github.com/nelbin4)
