@@ -26,7 +26,9 @@ class ProductionBooster extends GSController {
   // formula to invert itself above divisor=30).
   static REFERENCE_DIVISOR = 30;
   static OPS_RESERVE      = 2000;
-  static OPS_CHECK_STRIDE = 5;           // only poll GetOpsTillSuspend every N industries in a batch
+  static OPS_CHECK_STRIDE = 10;          // only poll GetOpsTillSuspend every N industries in a batch
+  static SETTINGS_REFRESH_WAKES = 10;    // settings are rarely changed in-game
+  static PURGE_EVERY_PASSES = 4;         // close events handle normal cleanup
   static OWN_FLAGS        = GSIndustry.INDCTL_NO_PRODUCTION_INCREASE |
                             GSIndustry.INDCTL_NO_PRODUCTION_DECREASE  |
                             GSIndustry.INDCTL_NO_CLOSURE               |
@@ -40,17 +42,23 @@ class ProductionBooster extends GSController {
   id_set       = null;
   id_cargo_ids = null;
   id_can_inc   = null;
+  transport_cache = null;
 
   // Round-robin batching state (not persisted; rebuilt on Load/Start)
   scan_ids = null;
   scan_pos = 0;
+  passes_since_purge = 0;
+  settings_refresh_wakes = 0;
 
   constructor() {
     id_set       = {};
     id_cargo_ids = {};
     id_can_inc   = {};
+    transport_cache = {};
     scan_ids     = null;
     scan_pos     = 0;
+    passes_since_purge = 0;
+    settings_refresh_wakes = 0;
   }
 
   static function IsRawIndustryFilter(industry_id) {
@@ -82,6 +90,7 @@ class ProductionBooster extends GSController {
     delete this.id_set[id];
     delete this.id_cargo_ids[id];
     delete this.id_can_inc[id];
+    delete this.transport_cache[id];
     this.scan_ids = null; // force scan-order rebuild so stale id is dropped
   }
 
@@ -130,6 +139,7 @@ class ProductionBooster extends GSController {
     // wakes (slower reaction, less overhead). No collapsing/plateau.
     this.sleep_ticks         = max(1,
         ProductionBooster.TICKS_PER_DAY * this.batch_divisor / ProductionBooster.REFERENCE_DIVISOR);
+    this.settings_refresh_wakes = ProductionBooster.SETTINGS_REFRESH_WAKES;
 
     local invalid = this.increase_threshold <= this.decrease_threshold;
     if (invalid != this.invalid_settings) {
@@ -222,7 +232,11 @@ class ProductionBooster extends GSController {
     }
   }
 
-  function AvgTransportPct(id, cargo_ids) {
+  function AvgTransportPct(id, cargo_ids, cur_date) {
+    if (id in this.transport_cache && this.transport_cache[id].date == cur_date) {
+      return this.transport_cache[id].value;
+    }
+
     local total = 0;
     local count = 0;
     foreach (cargo_id in cargo_ids) {
@@ -230,7 +244,9 @@ class ProductionBooster extends GSController {
       total += GSIndustry.GetLastMonthTransportedPercentage(id, cargo_id);
       count++;
     }
-    return count > 0 ? total / count : -1;
+    local value = count > 0 ? total / count : -1;
+    this.transport_cache[id] <- { date = cur_date, value = value };
+    return value;
   }
 
   // Processes one industry using its cached cargo-id array -- no
@@ -253,7 +269,7 @@ class ProductionBooster extends GSController {
 
     if (GSIndustry.GetAmountOfStationsAround(id) == 0) return;
 
-    local avg_pct = this.AvgTransportPct(id, cargo_ids);
+    local avg_pct = this.AvgTransportPct(id, cargo_ids, cur_date);
     if (avg_pct < 0) return;
 
     local current_level = GSIndustry.GetProductionLevel(id);
@@ -291,17 +307,24 @@ class ProductionBooster extends GSController {
   // less fixed per-wake overhead, at the cost of a proportionally longer
   // full-pass duration (slower reaction). Lowering it does the reverse.
   function ProcessIndustriesBatch() {
-    this.ReadSettings();
+    if (this.settings_refresh_wakes > 0) {
+      this.settings_refresh_wakes--;
+    } else {
+      this.ReadSettings();
+    }
     this.DrainEvents();
 
     if (this.invalid_settings) return;
     if (this.id_set.len() == 0) return;
 
     if (this.scan_ids == null || this.scan_pos >= this.scan_ids.len()) {
-      // Starting a fresh pass -- cheap moment to drop any industries that
-      // went invalid without firing ET_INDUSTRY_CLOSE (rare, but keeps
-      // scan_ids/batch sizing accurate over long games).
-      this.PurgeStalledIndustries();
+      // Close events handle normal cleanup; periodically check for stale
+      // entries that did not emit an industry-close event.
+      this.passes_since_purge++;
+      if (this.passes_since_purge >= ProductionBooster.PURGE_EVERY_PASSES) {
+        this.PurgeStalledIndustries();
+        this.passes_since_purge = 0;
+      }
       this.scan_ids = [];
       foreach (id, _ in this.id_set) this.scan_ids.push(id);
       this.scan_pos = 0;
@@ -313,10 +336,6 @@ class ProductionBooster extends GSController {
 
     local cur_date = GSDate.GetCurrentDate();
     local cur_year = GSDate.GetYear(cur_date);
-
-    // Async mode avoids blocking on each SetProductionLevel command's
-    // result, mirroring what ApplyOwnFlagsBatch already does for flags.
-    local _mode = GSAsyncMode(true);
 
     local checked_since_throttle = 0;
     for (local i = this.scan_pos; i < end; i++) {
@@ -383,5 +402,8 @@ class ProductionBooster extends GSController {
 
     this.scan_ids = null;
     this.scan_pos = 0;
+    this.passes_since_purge = 0;
+    this.settings_refresh_wakes = 0;
+    this.transport_cache = {};
   }
 }
