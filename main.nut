@@ -16,7 +16,6 @@ class ProductionBooster extends GSController {
 
   static TICKS_PER_DAY     = 74;
   static DAYS_PER_MONTH    = 30;
-  static TICKS_PER_MONTH   = 2220;       // = TICKS_PER_DAY * DAYS_PER_MONTH (Squirrel statics can't reference other statics)
   // REFERENCE_DIVISOR anchors batch_divisor's default (30) to the original
   // "wake daily, full pass ~monthly" cadence. batch_size is fixed relative
   // to this constant (NOT to batch_divisor) so that changing batch_divisor
@@ -27,7 +26,6 @@ class ProductionBooster extends GSController {
   static REFERENCE_DIVISOR = 30;
   static OPS_RESERVE      = 2000;
   static OPS_CHECK_STRIDE = 10;          // only poll GetOpsTillSuspend every N industries in a batch
-  static SETTINGS_REFRESH_WAKES = 10;    // settings are rarely changed in-game
   static PURGE_EVERY_PASSES = 4;         // close events handle normal cleanup
   static OWN_FLAGS        = GSIndustry.INDCTL_NO_PRODUCTION_INCREASE |
                             GSIndustry.INDCTL_NO_PRODUCTION_DECREASE  |
@@ -42,23 +40,21 @@ class ProductionBooster extends GSController {
   id_set       = null;
   id_cargo_ids = null;
   id_can_inc   = null;
-  transport_cache = null;
 
   // Round-robin batching state (not persisted; rebuilt on Load/Start)
   scan_ids = null;
   scan_pos = 0;
+  scan_pending = null;   // id -> true for entries in scan_ids not yet visited this pass; O(1) dup check
   passes_since_purge = 0;
-  settings_refresh_wakes = 0;
 
   constructor() {
     id_set       = {};
     id_cargo_ids = {};
     id_can_inc   = {};
-    transport_cache = {};
     scan_ids     = null;
     scan_pos     = 0;
+    scan_pending = {};
     passes_since_purge = 0;
-    settings_refresh_wakes = 0;
   }
 
   static function IsRawIndustryFilter(industry_id) {
@@ -80,7 +76,23 @@ class ProductionBooster extends GSController {
     this.id_set[id]       <- true;
     this.id_cargo_ids[id] <- cargo_ids;
     this.id_can_inc[id]   <- GSIndustryType.ProductionCanIncrease(GSIndustry.GetIndustryType(id));
-    this.scan_ids = null; // force scan-order rebuild so new industry gets picked up
+    // Append to the in-progress scan (if one exists) instead of nulling it --
+    // nulling here would restart the whole round-robin pass from index 0 on
+    // every industry open, which on a churny map can starve industries late
+    // in scan order of ever being reached.
+    //
+    // Guard against duplicate entries when OpenTTD reuses an industry ID:
+    // UnregisterIndustry() deliberately leaves a closed industry's id in
+    // scan_ids (it's just skipped via the id_set check when reached). If a
+    // new industry reuses that id before the scan gets there, pushing again
+    // would put two copies in the unvisited region and double-process it
+    // this pass. scan_pending mirrors the unvisited entries of scan_ids for
+    // an O(1) check -- entries are removed from it as the batch loop visits
+    // them, so this never has to scan the array.
+    if (this.scan_ids != null && !(id in this.scan_pending)) {
+      this.scan_ids.push(id);
+      this.scan_pending[id] <- true;
+    }
   }
 
   function UnregisterIndustry(id) {
@@ -90,8 +102,8 @@ class ProductionBooster extends GSController {
     delete this.id_set[id];
     delete this.id_cargo_ids[id];
     delete this.id_can_inc[id];
-    delete this.transport_cache[id];
-    this.scan_ids = null; // force scan-order rebuild so stale id is dropped
+    // scan_ids is left untouched -- a stale id left in it is skipped
+    // harmlessly by the "id in this.id_set" check in ProcessIndustriesBatch.
   }
 
   function ApplyOwnFlagsBatch() {
@@ -132,14 +144,14 @@ class ProductionBooster extends GSController {
     this.grace_period_months = GSController.GetSetting("grace_period_months");
     this.batch_divisor       = max(GSController.GetSetting("batch_divisor"), 1);
     // sleep_ticks scales linearly with batch_divisor around the reference
-    // point (divisor=30 -> daily, matching the original cadence). This is
-    // monotonic across the whole setting range: lower divisor -> shorter
-    // sleep -> more frequent, larger-batch wakes (faster reaction, more
-    // overhead); higher divisor -> longer sleep -> fewer, smaller-batch
-    // wakes (slower reaction, less overhead). No collapsing/plateau.
+    // point (divisor=30 -> daily, matching the original cadence). Batch
+    // size is fixed (see ProcessIndustriesBatch) -- only wake frequency
+    // scales here. This is monotonic across the whole setting range: lower
+    // divisor -> shorter sleep -> more frequent wakes (faster reaction,
+    // more overhead); higher divisor -> longer sleep -> fewer wakes
+    // (slower reaction, less overhead). No collapsing/plateau.
     this.sleep_ticks         = max(1,
         ProductionBooster.TICKS_PER_DAY * this.batch_divisor / ProductionBooster.REFERENCE_DIVISOR);
-    this.settings_refresh_wakes = ProductionBooster.SETTINGS_REFRESH_WAKES;
 
     local invalid = this.increase_threshold <= this.decrease_threshold;
     if (invalid != this.invalid_settings) {
@@ -200,6 +212,7 @@ class ProductionBooster extends GSController {
     this.PurgeStalledIndustries();
     this.ApplyOwnFlagsBatch();
     this.scan_ids = null; // fresh scan order after initial seeding
+    this.scan_pending = {};
     this.Log(3, "Tracking " + this.id_set.len() + " primary industries.");
 
     while (true) {
@@ -232,11 +245,7 @@ class ProductionBooster extends GSController {
     }
   }
 
-  function AvgTransportPct(id, cargo_ids, cur_date) {
-    if (id in this.transport_cache && this.transport_cache[id].date == cur_date) {
-      return this.transport_cache[id].value;
-    }
-
+  function AvgTransportPct(id, cargo_ids) {
     local total = 0;
     local count = 0;
     foreach (cargo_id in cargo_ids) {
@@ -244,9 +253,7 @@ class ProductionBooster extends GSController {
       total += GSIndustry.GetLastMonthTransportedPercentage(id, cargo_id);
       count++;
     }
-    local value = count > 0 ? total / count : -1;
-    this.transport_cache[id] <- { date = cur_date, value = value };
-    return value;
+    return count > 0 ? total / count : -1;
   }
 
   // Processes one industry using its cached cargo-id array -- no
@@ -269,7 +276,7 @@ class ProductionBooster extends GSController {
 
     if (GSIndustry.GetAmountOfStationsAround(id) == 0) return;
 
-    local avg_pct = this.AvgTransportPct(id, cargo_ids, cur_date);
+    local avg_pct = this.AvgTransportPct(id, cargo_ids);
     if (avg_pct < 0) return;
 
     local current_level = GSIndustry.GetProductionLevel(id);
@@ -307,11 +314,7 @@ class ProductionBooster extends GSController {
   // less fixed per-wake overhead, at the cost of a proportionally longer
   // full-pass duration (slower reaction). Lowering it does the reverse.
   function ProcessIndustriesBatch() {
-    if (this.settings_refresh_wakes > 0) {
-      this.settings_refresh_wakes--;
-    } else {
-      this.ReadSettings();
-    }
+    this.ReadSettings();
     this.DrainEvents();
 
     if (this.invalid_settings) return;
@@ -326,7 +329,11 @@ class ProductionBooster extends GSController {
         this.passes_since_purge = 0;
       }
       this.scan_ids = [];
-      foreach (id, _ in this.id_set) this.scan_ids.push(id);
+      this.scan_pending = {};
+      foreach (id, _ in this.id_set) {
+        this.scan_ids.push(id);
+        this.scan_pending[id] <- true;
+      }
       this.scan_pos = 0;
       if (this.scan_ids.len() == 0) return;
     }
@@ -343,6 +350,7 @@ class ProductionBooster extends GSController {
       checked_since_throttle = (checked_since_throttle + 1) % ProductionBooster.OPS_CHECK_STRIDE;
 
       local id = this.scan_ids[i];
+      delete this.scan_pending[id]; // visited -- no longer blocks a re-registration under this id
       if (!(id in this.id_set)) continue; // may have been unregistered mid-batch
       this.ProcessOneIndustry(id, cur_date, cur_year);
     }
@@ -402,8 +410,7 @@ class ProductionBooster extends GSController {
 
     this.scan_ids = null;
     this.scan_pos = 0;
+    this.scan_pending = {};
     this.passes_since_purge = 0;
-    this.settings_refresh_wakes = 0;
-    this.transport_cache = {};
   }
 }
